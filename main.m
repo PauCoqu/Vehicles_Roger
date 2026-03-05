@@ -1,0 +1,85 @@
+%% TASK 1 
+% Pau Cornudella Quer
+clear; close all; clc;
+load("model_data_clean.mat");
+
+%% Apartat 1 : Gravity sag (nm-rms) of the mirror surface
+K = KAAX; % Stiffness matrix
+M = MAAX; % Mass matrix
+n_nodes = size(node_coords,1); % N nodes
+ndof    = 6*n_nodes; % N DOFs 
+in_glo  = (1:ndof)'; % Global DOF index vector
+
+support_nodes = case_control_sets.subcase_0_SET_2;   % 3 fixacions
+
+fixdof = zeros(3*length(support_nodes),3);
+k = 1;
+for i = 1:length(support_nodes)
+    for j = 1:3   % DOF 1,2,3 (ux, uy, uz)
+        fixdof(k,:) = [support_nodes(i) j 0];
+        k = k + 1;
+    end
+end
+
+% Gravity load vector: F = M*g
+g = [0; 0; -9.81e3; 0; 0; 0]; % Unitats! g = 9.81e3 mm/s^2
+g_glo = repmat(g,n_nodes,1); %Replica l'array g a tots els nodes
+F = M * g_glo;
+
+% index global dels DOF = dof + (node-1)*6
+in_d = (fixdof(:,1)-1)*6 + fixdof(:,2);   % indexs globals dels DOF fixats
+u_d  = fixdof(:,3); % valors prescrits (tots 0)
+in_n = setdiff(in_glo, in_d); % Free DOFs
+
+% 2) Theory_statics eq 6
+% K_NN * u_N = F_N - K_ND*u_D
+u_D = u_d;
+K_ND = K(in_n, in_d);
+K_NN = K(in_n, in_n);
+F_N  = F(in_n);
+u_N = K_NN \ (F_N-K_ND*u_D);
+
+% Desplaçaments dels nodes
+u = zeros(ndof,1);
+u(in_n) = u_N; % Desplaçaments dels nodes lliures deguts a la gravetat
+u(in_d) = u_d; 
+
+% 3) Extract mirror surface normal displacement u_z and compute nm-rms
+uz_all = u(3:6:end);
+x = node_coords(:,1);
+y = node_coords(:,2);
+r = sqrt(x.^2 + y.^2);
+R = max(r); % correcte = 75
+
+
+%% ESTIC AQUÍ
+
+
+
+
+
+
+
+
+
+
+
+
+% Remove piston (mean) because RMS surface error is about "shape", not offset
+uz_mirror_nopiston = uz_all- mean(uz_all);
+
+% RMS with uniform mesh spacing -> simple average
+uz_rms_mm = sqrt(mean(uz_mirror_nopiston.^2));
+
+% Convert mm -> nm (1 mm = 1e6 nm)
+uz_rms_nm = uz_rms_mm * 1e6;
+
+%% 5) (Optional) Quick sanity checks / prints
+fprintf("Mirror radius detected: %.4f mm\n", R);
+fprintf("Gravity sag (surface error) = %.3f nm-rms\n", uz_rms_nm);
+
+%% 6) (Optional) Surface map output for visualization (META / postprocess)
+% Typically: export [x y uz] or [x y z uz] for mirror nodes
+% TODO if required by your META template:
+% out = [x(mirror_nodes), y(mirror_nodes), uz_mirror];
+% writematrix(out, "gravity_sag_map.csv");
