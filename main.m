@@ -47,6 +47,15 @@ F_D = K_DD * u_D + K_DN * u_N; % ç
 r_f = F_D - F(in_d); %F(in_d) = F externes
 sum(r_f,"all") + sum(F,"all"); %aprox 0
 
+%Gravity sag
+u_full = zeros(ndof, 1);
+u_full(in_n) = u_N;
+uz = u_full(3:6:end); % mm
+gravity_sag_nm_rms = std(uz) * 1e6; % nm-RMS
+
+%Comparació massa amb reaccions:
+massa_total = sum(M, 'all') / 6; % tn
+RESULTAT = r_f - 9.81*massa_total;
 
 %% Apartat 2
 
@@ -60,8 +69,7 @@ R = max(r); % correcte = 75
 x_norm = x/R; %normalized coordinates
 y_norm = y/R; %normalized coordinates
 R_norm = max(sqrt(x_norm.^2 + y_norm.^2));
-
-% 
+    
 for j = 1:n_modes
     [n, m, name, val, Z_func] = zernike_noll(x_norm, y_norm, j);
     Z(:, j) = val;  % Zernike values at each node
@@ -79,15 +87,95 @@ for i = 1:n_act
 end
 
 C = Z \ U;  % Influence matrix
+C_report = C(4:10, 13);
+
+
+%% Apartat 3
 Zt = zeros(n_modes, 1);
 Zt(4:15) = 0;  % Target compensation = 0 pels modes > 15
 
 % Least-squares method
-f = C \ Zt;  % Solve C * f = Zt
+idx = 4:100; 
+f = C(idx, :) \ Zt(idx); % Solve C * f = Zt
 res_rms = norm(C*f - Zt);
-res_high_freq = norm(C(101:end, :) * f(101:end) - Zt(101:end));
-actuator_13_coeffs = C(:, 13);  % Coefficients for actuator 13
-zernike_modes_4_10 = C(4:10, :);  % Coefficients for Zernike modes 4 to 10
 
+% Aberracions Zt [nm-RMS]. Enunciat
+Zt = zeros(n_modes, 1);
+Zt(4)  = 1300;  % Defocus
+Zt(5)  = -650;  % Astigmatism (Oblique)
+Zt(6)  = 650;   % Astigmatism (Vertical)
+Zt(7)  = -350;  % Coma (Vertical)
+Zt(8)  = 350;   % Coma (Horizontal)
+Zt(9)  = -180;  % Trefoil (Vertical)
+Zt(10) = 180;   % Trefoil (Oblique)
+Zt(11) = -120;  % Spherical (Primary)
+Zt(12) = 70;    % Sec. Astigmatism (Vertical)
+Zt(13) = -70;   % Sec. Astigmatism (Oblique)
+Zt(14) = -45;   % Quadrafoil (Vertical)
+Zt(15) = 45;    % Quadrafoil (Oblique) 
+
+% No considerar modes 1, 2, 3
+idx_opt = 4:n_modes; 
+f_opt = C(idx_opt, :) \ Zt(idx_opt); % Forces necessàries (N)
+
+% Residu RMS [nm]
+residu_vec = C(idx_opt, :) * f_opt - Zt(idx_opt);
+total_residual_rms = norm(residu_vec); % RSS dels coeficients
+high_freq_residual = norm(Zt(101:end)); % En aquest cas és 0 segons Zt
+
+%% Apartat 4 (CHAT GPT PER ARA)
+
+% (a) Unconstrained
+n_eigs = 12; 
+[V_unc, D_unc] = eigs(K, M, n_eigs, 'smallestabs'); 
+freq_unc = sqrt(diag(D_unc)) / (2*pi); % Freqüències en Hz
+fprintf('Primeres 6 freqüències (Unconstrained): %f Hz (Haurien de ser ~0)\n', freq_unc(1:6));
+
+% (b) Constrained: Simply supported on its three fixations
+M_NN = M(in_n, in_n);
+[V_con, D_con] = eigs(K_NN, M_NN, 10, 'smallestabs');
+freq_con = sqrt(diag(D_con)) / (2*pi); % Hz
+fprintf('Primera freqüència pròpia (Constrained): %f Hz\n', freq_con(1));
+
+% El 6è mode shape per a META
+mode_6_full = zeros(ndof, 1);
+mode_6_full(in_n) = V_con(:, 6);
+
+%% Apartat 5 (CHAT GPT PER ARA)
+f_range = 0:1:1000; % Estudi de 0 a 1000 Hz 
+zeta = 0.002;       % Amortiment modal del 0.2
+node_13 = act(13);  % Node de l'actuador 13 
+dof_13_global = (node_13-1)*6 + 3; % DOF Z global
+dof_13_in_N = find(in_n == dof_13_global); % Index dins de la matriu reduïda
+
+% Vector de força per a l'actuador 13 (en l'espai reduït in_n)
+F_13_N = zeros(length(in_n), 1);
+F_13_N(dof_13_in_N) = 1; % 1N sinusoidal 
+
+H = zeros(size(f_range));
+for idx = 1:length(f_range)
+    f_val = f_range(idx);
+    omega = 2*pi*f_val;
+    
+    % Matriu dinàmica: [K - w^2*M + i*w*C]
+    % Nota: L'amortiment C_damp s'aproxima com 2*zeta*omega_n*M
+    % Per simplicitat i precisió en sistemes grans, es resol el sistema:
+    DynamicK = K_NN - (omega^2)*M_NN + 1i*omega*(2*zeta*sqrt(mean(diag(K_NN))*mean(diag(M_NN)))*M_NN);
+    
+    u_dyn = DynamicK \ F_13_N;
+    H(idx) = abs(u_dyn(dof_13_in_N)) * 1e3; % Desplaçament en um/N 
+end
+
+% Càlcul de l'amplificació en dB 
+Amp_dB = 20 * log10(H / H(1)); 
+
+% Determinació del bandwidth mecànic (+3dB) 
+bw_idx = find(Amp_dB >= 3, 1);
+if isempty(bw_idx)
+    bandwidth_Hz = 1000;
+else
+    bandwidth_Hz = f_range(bw_idx);
+end
+fprintf('Mecanical Bandwidth (+3dB): %f Hz\n', bandwidth_Hz);
 
 
