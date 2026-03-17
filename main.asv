@@ -45,6 +45,7 @@ F_N  = F(in_n);
 u_N = K_NN \ (F_N-K_ND*u_D);
 F_D = K_DD * u_D + K_DN * u_N; % ç
 r_f = F_D - F(in_d); %F(in_d) = F externes
+sum(r_f,"all") + sum(F,"all"); %aprox 0
 
 %Gravity sag
 u_full = zeros(ndof, 1);
@@ -58,22 +59,8 @@ Fz = F(3:6:end);
 massa_total = -sum(Fz) / 9.81e3;
 r_z = r_f(3:3:end);
 % Comparació (hauria de donar 0)
-sum(r_z) + sum(Fz);
+RESULTAT = sum(r_z) + sum(Fz)
 
-%Reaccions als suports
-R_support_1 = r_f(1:3);
-R_support_2 = r_f(4:6);
-R_support_3 = r_f(7:9);
-
-%Exportació al META
-uz = u_full(3:6:end);
-uz0 = uz - mean(uz);
-u_grav = zeros(n_nodes,6);
-u_grav(:,3) = uz0 * 1e6;   % amplificació només per visualització
-fillhdf('h5template.h5','gravity_sag_map_vis.h5',u_grav);
-% Comprovació
-D = h5read('gravity_sag_map_vis.h5','/NASTRAN/RESULT/NODAL/DISPLACEMENT');
-max(abs(D.Z))
 
 %% Apartat 2
 n_modes = 100; % enunciat
@@ -140,8 +127,8 @@ high_freq_residual = norm(Zt(101:end)); % Hauria de ser 0
 nmodes_ap4 = 12;
 
 % 4a) Unconstrained
-[V_free, D_free] = eigs(K, M, nmodes_ap4, 'smallestabs');
-lambda_free = diag(D_free); % lambda = w^2
+[V_free, D_free] = eigs(K, M, nmodes_ap4, 'sm');
+lambda_free = diag(D_free);          % lambda = w^2
 freq_free = sqrt(abs(lambda_free)) / (2*pi);   % Hz
 freq_free = sort(freq_free);
 
@@ -154,7 +141,7 @@ fprintf('Rigid body modes detectats: %d\n', n_rigid);
 
 % 4b) Constrained (només DOF lliures)
 M_NN = M(in_n, in_n);
-[V_cons, D_cons] = eigs(K_NN, M_NN, nmodes_ap4, 'smallestabs');
+[V_cons, D_cons] = eigs(K_NN, M_NN, nmodes, 'sm');
 lambda_cons = diag(D_cons);
 freq_cons = sqrt(abs(lambda_cons)) / (2*pi);   % Hz
 
@@ -167,24 +154,9 @@ disp(freq_cons)
 
 % 6è mode restringit
 mode6 = zeros(ndof,1);
-mode6(in_n) = V_cons(:,6);
+mode6(in_n) = V_cons(:,6);   % posem el mode reduït dins el vector complet
 
 fprintf('Freqüència del 6è mode: %.6f Hz\n', freq_cons(6));
-
-% Convertir a format nodal [X Y Z RX RY RZ]
-u_mode6 = zeros(n_nodes,6);
-u_mode6(:,1) = mode6(1:6:end);
-u_mode6(:,2) = mode6(2:6:end);
-u_mode6(:,3) = mode6(3:6:end);
-u_mode6(:,4) = mode6(4:6:end);
-u_mode6(:,5) = mode6(5:6:end);
-u_mode6(:,6) = mode6(6:6:end);
-
-% Normalització per visualització
-u_mode6 = u_mode6 / max(abs(u_mode6(:)));
-
-% Exportar a META
-fillhdf('h5template.h5','mode6_constrained.h5',u_mode6);
 
 
 %% Apartat 5 (CHAT GPT PER ARA)
