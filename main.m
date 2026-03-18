@@ -1,4 +1,4 @@
-%% TASK 1 support_nodes
+%% TASK 1
 % Pau Cornudella Quer i Roger Jordi Martinez Pardell
 clear; close all; clc;
 load("model_data_clean.mat");
@@ -69,10 +69,10 @@ R_support_3 = r_f(7:9);
 uz = u_full(3:6:end);
 uz0 = uz - mean(uz);
 u_grav = zeros(n_nodes,6);
-u_grav(:,3) = uz0 * 1e6;   % amplificació només per visualització
-fillhdf('h5template.h5','gravity_sag_map_vis.h5',u_grav);
+u_grav(:,3) = uz0;
+fillhdf('h5template.h5','META_1.h5',u_grav*1e10);
 % Comprovació
-D = h5read('gravity_sag_map_vis.h5','/NASTRAN/RESULT/NODAL/DISPLACEMENT');
+D = h5read('META_1.h5','/NASTRAN/RESULT/NODAL/DISPLACEMENT');
 max(abs(D.Z))
 
 %% Apartat 2
@@ -108,7 +108,8 @@ for i = 1:n_act
 end
 
 C = (Z \ U) * 1e6;   % de mm/N a nm/N (Influence matrix)
-C_report = C(4:10, 13) *1e-3; % nm/N -> um/N
+disp('Coeficients Zernike (modes 4-10) per actuador 13 [um/N]:')
+disp(C(4:10, 13) *1e-3) % nm/N -> um/N
 
 
 %% Apartat 3
@@ -130,16 +131,20 @@ Zt(15) = 45;    % Quadrafoil (Oblique)
 
 idx_opt = 4:n_modes; % No considerar modes 1, 2, 3
 f_opt = C(idx_opt, :) \ Zt(idx_opt); 
+disp('Forces actuadors 13 a 17 [N]:')
+disp(f_opt(13:17))
 
 % Residu RMS [nm]
 residu_vec = C(idx_opt, :) * f_opt - Zt(idx_opt);
-total_residual_rms = sqrt(mean(residu_vec.^2)); % RMS [nm]
-high_freq_residual = norm(Zt(101:end)); % Hauria de ser 0
+residual_surface = Z(:,idx_opt) * ((C(idx_opt,:) * f_opt) * 1e-6) - Z(:,idx_opt) * (Zt(idx_opt) * 1e-6);
+total_residual_rms = sqrt(mean(residual_surface.^2)) * 1e6 % [nm]
+residual_100_modes_rms = sqrt(mean(residu_vec.^2)) %[nm]
+high_freq_residual = norm(Zt(101:end)) %[nm]
 
 %% Apartat 4
-nmodes_ap4 = 12;
+nmodes_ap4 = 10;
 
-% 4a) Unconstrained
+% Unconstrained
 [V_free, D_free] = eigs(K, M, nmodes_ap4, 'smallestabs');
 lambda_free = diag(D_free); % lambda = w^2
 freq_free = sqrt(abs(lambda_free)) / (2*pi);   % Hz
@@ -148,11 +153,11 @@ freq_free = sort(freq_free);
 disp('Frequencies unconstrained [Hz]:')
 disp(freq_free)
 
-% Comprovació: haurien d'aparèixer 6 modes rígids ~ 0 Hz
+% Comprovació: haurien d'aparèixer 6 modes rígids aprox 0 Hz
 n_rigid = sum(freq_free < 1e-3);
 fprintf('Rigid body modes detectats: %d\n', n_rigid);
 
-% 4b) Constrained (només DOF lliures)
+% Constrained (només DOF lliures)
 M_NN = M(in_n, in_n);
 [V_cons, D_cons] = eigs(K_NN, M_NN, nmodes_ap4, 'smallestabs');
 lambda_cons = diag(D_cons);
@@ -187,41 +192,46 @@ u_mode6 = u_mode6 / max(abs(u_mode6(:)));
 fillhdf('h5template.h5','mode6_constrained.h5',u_mode6);
 
 
-%% Apartat 5 (CHAT GPT PER ARA)
-f_range = 0:1:1000; % Estudi de 0 a 1000 Hz 
-zeta = 0.002;       % Amortiment modal del 0.2
-node_13 = act(13);  % Node de l'actuador 13 
-dof_13_global = (node_13-1)*6 + 3; % DOF Z global
-dof_13_in_N = find(in_n == dof_13_global); % Index dins de la matriu reduïda
+%% Apartat 5 - Resposta dinàmica
 
-% Vector de força per a l'actuador 13 (en l'espai reduït in_n)
-F_13_N = zeros(length(in_n), 1);
-F_13_N(dof_13_in_N) = 1; % 1N sinusoidal 
+f_range = 0:10:1000;   % Hz
+zeta = 0.002;          % 0.2%
 
+% Modes del sistema restringit
+[V, D] = eigs(K_NN, M_NN, n_modes, 'smallestabs');
+lambda = diag(D);
+omega_n = sqrt(lambda);   % rad/s
+
+% DOF vertical de l'actuador 13
+dof_13_global = (act(13)-1)*6 + 3;
+dof_13 = find(in_n == dof_13_global);
+
+% Força de 1 N al mateix punt
+F = zeros(length(in_n),1);
+F(dof_13) = 1;
+
+% Força modal
+F_modal = V' * F;
 H = zeros(size(f_range));
-for idx = 1:length(f_range)
-    f_val = f_range(idx);
-    omega = 2*pi*f_val;
-    
-    % Matriu dinàmica: [K - w^2*M + i*w*C]
-    % Nota: L'amortiment C_damp s'aproxima com 2*zeta*omega_n*M
-    % Per simplicitat i precisió en sistemes grans, es resol el sistema:
-    DynamicK = K_NN - (omega^2)*M_NN + 1i*omega*(2*zeta*sqrt(mean(diag(K_NN))*mean(diag(M_NN)))*M_NN);
-    
-    u_dyn = DynamicK \ F_13_N;
-    H(idx) = abs(u_dyn(dof_13_in_N)) * 1e3; % Desplaçament en um/N 
+
+for k = 1:length(f_range)
+    omega = 2*pi*f_range(k);
+
+    % Resposta modal
+    xi = F_modal ./ (omega_n.^2 - omega^2 + 1i*2*zeta*omega_n*omega);
+    % Tornar a espai físic
+    u = V * xi;
+    % Compliment dinàmic
+    H(k) = abs(u(dof_13)) * 1e3;   % um/N
 end
 
-% Càlcul de l'amplificació en dB 
-Amp_dB = 20 * log10(H / H(1)); 
+Amp_dB = 20*log10(H / H(1)); %en dB
 
-% Determinació del bandwidth mecànic (+3dB) 
+% Bandwidth +3 dB
 bw_idx = find(Amp_dB >= 3, 1);
-if isempty(bw_idx)
-    bandwidth_Hz = 1000;
-else
-    bandwidth_Hz = f_range(bw_idx);
-end
-fprintf('Mecanical Bandwidth (+3dB): %f Hz\n', bandwidth_Hz);
+bandwidth_Hz = f_range(bw_idx);
 
+fprintf('Max amplification: %.4f dB\n', max(Amp_dB));
+fprintf('Static compliance H(0): %.6f um/N\n', H(1));
+fprintf('Mechanical bandwidth (+3 dB): %.2f Hz\n', bandwidth_Hz);
 
